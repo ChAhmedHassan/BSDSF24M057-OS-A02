@@ -147,7 +147,7 @@ void print_horizontal(const char *dir, char **names, int count) {
     printf("\n");
 }
 
-void do_ls(const char *dir, DisplayMode mode) {
+ void do_ls(const char *dir, DisplayMode mode, int recursive_flag) {
     DIR *dp = opendir(dir);
     if (dp == NULL) { perror("opendir"); return; }
 
@@ -168,6 +168,10 @@ void do_ls(const char *dir, DisplayMode mode) {
 
     qsort(names, count, sizeof(char *), compare_names);
 
+        if (recursive_flag) {
+        printf("%s:\n", dir);
+    }
+
     switch (mode) {
         case MODE_LONG:
             for (int i = 0; i < count; i++) {
@@ -183,6 +187,22 @@ void do_ls(const char *dir, DisplayMode mode) {
             print_columns(dir, names, count);
     }
 
+    /* Recurse into any subdirectories, after listing this one */
+    if (recursive_flag) {
+        for (int i = 0; i < count; i++) {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            struct stat st;
+            if (lstat(path, &st) == -1) continue;
+
+            if (S_ISDIR(st.st_mode)) {
+                printf("\n");
+                do_ls(path, mode, recursive_flag); /* base case: not a directory, or we just print and return */
+            }
+        }
+    }
+
     for (int i = 0; i < count; i++) free(names[i]);
     free(names);
 }
@@ -191,12 +211,15 @@ int main(int argc, char *argv[]) {
     DisplayMode mode = MODE_DEFAULT;
     int opt;
 
-    while ((opt = getopt(argc, argv, "lx")) != -1) {
+        int recursive_flag = 0;
+
+    while ((opt = getopt(argc, argv, "lxR")) != -1) {
         switch (opt) {
             case 'l': mode = MODE_LONG; break;
             case 'x': mode = MODE_HORIZONTAL; break;
+            case 'R': recursive_flag = 1; break;
             default:
-                fprintf(stderr, "Usage: %s [-l] [-x] [directory]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-l] [-x] [-R] [directory]\n", argv[0]);
                 return 1;
         }
     }
@@ -204,6 +227,6 @@ int main(int argc, char *argv[]) {
     char *dir = ".";
     if (optind < argc) dir = argv[optind];
 
-    do_ls(dir, mode);
+    do_ls(dir, mode, recursive_flag);
     return 0;
 }
