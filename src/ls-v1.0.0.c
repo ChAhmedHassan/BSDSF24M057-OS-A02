@@ -12,14 +12,20 @@
 
 #define SPACING 2
 
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"
+#define COLOR_GREEN   "\033[0;32m"
+#define COLOR_RED     "\033[0;31m"
+#define COLOR_PINK    "\033[0;35m"
+#define COLOR_REVERSE "\033[7m"
+
+typedef enum { MODE_DEFAULT, MODE_LONG, MODE_HORIZONTAL } DisplayMode;
 
 int compare_names(const void *a, const void *b) {
     const char *name_a = *(const char **)a;
     const char *name_b = *(const char **)b;
     return strcmp(name_a, name_b);
 }
-
-typedef enum { MODE_DEFAULT, MODE_LONG, MODE_HORIZONTAL } DisplayMode;
 
 void print_permissions(mode_t mode) {
     char perms[11];
@@ -37,6 +43,30 @@ void print_permissions(mode_t mode) {
     printf("%s ", perms);
 }
 
+/* Decide what color a file should be printed in, based on its type */
+const char *get_color(const char *path) {
+    struct stat st;
+    if (lstat(path, &st) == -1) return "";
+
+    if (S_ISLNK(st.st_mode)) return COLOR_PINK;
+    if (S_ISDIR(st.st_mode)) return COLOR_BLUE;
+    if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode) ||
+        S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) return COLOR_REVERSE;
+
+    const char *name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    int len = strlen(name);
+    if ((len > 4 && strcmp(name + len - 4, ".tar") == 0) ||
+        (len > 3 && strcmp(name + len - 3, ".gz")  == 0) ||
+        (len > 4 && strcmp(name + len - 4, ".zip") == 0)) {
+        return COLOR_RED;
+    }
+
+    if (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) return COLOR_GREEN;
+
+    return "";
+}
+
 void print_long_listing(const char *path, const char *name) {
     struct stat st;
     if (lstat(path, &st) == -1) { perror("lstat"); return; }
@@ -51,7 +81,9 @@ void print_long_listing(const char *path, const char *name) {
     struct tm *tm_info = localtime(&st.st_mtime);
     strftime(timebuf, sizeof(timebuf), "%b %d %H:%M", tm_info);
     printf("%s ", timebuf);
-    printf("%s\n", name);
+
+    const char *color = get_color(path);
+    printf("%s%s%s\n", color, name, color[0] ? COLOR_RESET : "");
 }
 
 int get_terminal_width(void) {
@@ -69,8 +101,19 @@ int max_name_length(char **names, int count) {
     return max_len;
 }
 
-/* Down then across (used as default, no option) */
-void print_columns(char **names, int count) {
+/* Print one name in color, then pad with spaces to col_width.
+   Padding is done manually (not with %-*s) because the invisible
+   escape-code characters would otherwise throw off the alignment. */
+void print_colored_name(const char *dir, const char *name, int col_width) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    const char *color = get_color(path);
+    int name_len = strlen(name);
+    printf("%s%s%s", color, name, color[0] ? COLOR_RESET : "");
+    for (int i = name_len; i < col_width; i++) printf(" ");
+}
+
+void print_columns(const char *dir, char **names, int count) {
     if (count == 0) return;
     int col_width = max_name_length(names, count) + SPACING;
     int term_width = get_terminal_width();
@@ -81,14 +124,13 @@ void print_columns(char **names, int count) {
     for (int row = 0; row < num_rows; row++) {
         for (int col = 0; col < num_cols; col++) {
             int idx = col * num_rows + row;
-            if (idx < count) printf("%-*s", col_width, names[idx]);
+            if (idx < count) print_colored_name(dir, names[idx], col_width);
         }
         printf("\n");
     }
 }
 
-/* Across only: left to right, wrap when the line is full (-x) */
-void print_horizontal(char **names, int count) {
+void print_horizontal(const char *dir, char **names, int count) {
     if (count == 0) return;
     int col_width = max_name_length(names, count) + SPACING;
     int term_width = get_terminal_width();
@@ -99,7 +141,7 @@ void print_horizontal(char **names, int count) {
             printf("\n");
             current_width = 0;
         }
-        printf("%-*s", col_width, names[i]);
+        print_colored_name(dir, names[i], col_width);
         current_width += col_width;
     }
     printf("\n");
@@ -122,7 +164,8 @@ void do_ls(const char *dir, DisplayMode mode) {
         names[count] = strdup(entry->d_name);
         count++;
     }
-    closedir(dp);    
+    closedir(dp);
+
     qsort(names, count, sizeof(char *), compare_names);
 
     switch (mode) {
@@ -134,10 +177,10 @@ void do_ls(const char *dir, DisplayMode mode) {
             }
             break;
         case MODE_HORIZONTAL:
-            print_horizontal(names, count);
+            print_horizontal(dir, names, count);
             break;
         default:
-            print_columns(names, count);
+            print_columns(dir, names, count);
     }
 
     for (int i = 0; i < count; i++) free(names[i]);
