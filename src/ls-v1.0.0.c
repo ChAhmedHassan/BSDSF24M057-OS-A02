@@ -12,6 +12,13 @@
 
 #define SPACING 2
 
+
+int compare_names(const void *a, const void *b) {
+    const char *name_a = *(const char **)a;
+    const char *name_b = *(const char **)b;
+    return strcmp(name_a, name_b);
+}
+
 typedef enum { MODE_DEFAULT, MODE_LONG, MODE_HORIZONTAL } DisplayMode;
 
 void print_permissions(mode_t mode) {
@@ -115,7 +122,8 @@ void do_ls(const char *dir, DisplayMode mode) {
         names[count] = strdup(entry->d_name);
         count++;
     }
-    closedir(dp);
+    closedir(dp);    
+    qsort(names, count, sizeof(char *), compare_names);
 
     switch (mode) {
         case MODE_LONG:
