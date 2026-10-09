@@ -12,6 +12,8 @@
 
 #define SPACING 2
 
+typedef enum { MODE_DEFAULT, MODE_LONG, MODE_HORIZONTAL } DisplayMode;
+
 void print_permissions(mode_t mode) {
     char perms[11];
     perms[0] = S_ISDIR(mode) ? 'd' : (S_ISLNK(mode) ? 'l' : '-');
@@ -30,10 +32,7 @@ void print_permissions(mode_t mode) {
 
 void print_long_listing(const char *path, const char *name) {
     struct stat st;
-    if (lstat(path, &st) == -1) {
-        perror("lstat");
-        return;
-    }
+    if (lstat(path, &st) == -1) { perror("lstat"); return; }
     print_permissions(st.st_mode);
     printf("%ld ", (long)st.st_nlink);
     struct passwd *pw = getpwuid(st.st_uid);
@@ -48,60 +47,67 @@ void print_long_listing(const char *path, const char *name) {
     printf("%s\n", name);
 }
 
-/* Ask the terminal how wide it is. Fall back to 80 if we can't tell. */
 int get_terminal_width(void) {
     struct winsize w;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0) {
-        return 80;
-    }
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0) return 80;
     return w.ws_col;
 }
 
-/* "Down then across": fill column 1 top-to-bottom, then column 2, etc. */
-void print_columns(char **names, int count) {
-    if (count == 0) return;
-
+int max_name_length(char **names, int count) {
     int max_len = 0;
     for (int i = 0; i < count; i++) {
         int len = strlen(names[i]);
         if (len > max_len) max_len = len;
     }
+    return max_len;
+}
 
+/* Down then across (used as default, no option) */
+void print_columns(char **names, int count) {
+    if (count == 0) return;
+    int col_width = max_name_length(names, count) + SPACING;
     int term_width = get_terminal_width();
-    int col_width = max_len + SPACING;
     int num_cols = term_width / col_width;
     if (num_cols < 1) num_cols = 1;
-
-    int num_rows = (count + num_cols - 1) / num_cols; /* ceiling division */
+    int num_rows = (count + num_cols - 1) / num_cols;
 
     for (int row = 0; row < num_rows; row++) {
         for (int col = 0; col < num_cols; col++) {
-            int idx = col * num_rows + row; /* key formula: down then across */
-            if (idx < count) {
-                printf("%-*s", col_width, names[idx]);
-            }
+            int idx = col * num_rows + row;
+            if (idx < count) printf("%-*s", col_width, names[idx]);
         }
         printf("\n");
     }
 }
 
-void do_ls(const char *dir, int long_flag) {
-    DIR *dp = opendir(dir);
-    if (dp == NULL) {
-        perror("opendir");
-        return;
-    }
+/* Across only: left to right, wrap when the line is full (-x) */
+void print_horizontal(char **names, int count) {
+    if (count == 0) return;
+    int col_width = max_name_length(names, count) + SPACING;
+    int term_width = get_terminal_width();
 
-    /* Read every filename into a dynamic array first -
-       we must know them all before we can lay out columns. */
+    int current_width = 0;
+    for (int i = 0; i < count; i++) {
+        if (current_width != 0 && current_width + col_width > term_width) {
+            printf("\n");
+            current_width = 0;
+        }
+        printf("%-*s", col_width, names[i]);
+        current_width += col_width;
+    }
+    printf("\n");
+}
+
+void do_ls(const char *dir, DisplayMode mode) {
+    DIR *dp = opendir(dir);
+    if (dp == NULL) { perror("opendir"); return; }
+
     char **names = NULL;
-    int count = 0;
-    int capacity = 0;
+    int count = 0, capacity = 0;
 
     struct dirent *entry;
     while ((entry = readdir(dp)) != NULL) {
         if (entry->d_name[0] == '.') continue;
-
         if (count >= capacity) {
             capacity = capacity == 0 ? 16 : capacity * 2;
             names = realloc(names, capacity * sizeof(char *));
@@ -111,14 +117,19 @@ void do_ls(const char *dir, int long_flag) {
     }
     closedir(dp);
 
-    if (long_flag) {
-        for (int i = 0; i < count; i++) {
-            char path[1024];
-            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
-            print_long_listing(path, names[i]);
-        }
-    } else {
-        print_columns(names, count);
+    switch (mode) {
+        case MODE_LONG:
+            for (int i = 0; i < count; i++) {
+                char path[1024];
+                snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+                print_long_listing(path, names[i]);
+            }
+            break;
+        case MODE_HORIZONTAL:
+            print_horizontal(names, count);
+            break;
+        default:
+            print_columns(names, count);
     }
 
     for (int i = 0; i < count; i++) free(names[i]);
@@ -126,14 +137,15 @@ void do_ls(const char *dir, int long_flag) {
 }
 
 int main(int argc, char *argv[]) {
-    int long_flag = 0;
+    DisplayMode mode = MODE_DEFAULT;
     int opt;
 
-    while ((opt = getopt(argc, argv, "l")) != -1) {
+    while ((opt = getopt(argc, argv, "lx")) != -1) {
         switch (opt) {
-            case 'l': long_flag = 1; break;
+            case 'l': mode = MODE_LONG; break;
+            case 'x': mode = MODE_HORIZONTAL; break;
             default:
-                fprintf(stderr, "Usage: %s [-l] [directory]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-l] [-x] [directory]\n", argv[0]);
                 return 1;
         }
     }
@@ -141,6 +153,6 @@ int main(int argc, char *argv[]) {
     char *dir = ".";
     if (optind < argc) dir = argv[optind];
 
-    do_ls(dir, long_flag);
+    do_ls(dir, mode);
     return 0;
 }
